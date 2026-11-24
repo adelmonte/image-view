@@ -1,26 +1,24 @@
 [package]
-name = "g-view"
-version = "0.1.0"
+name = "image-view"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-async-channel = "2.5.0"
-cairo-rs = "0.18"
+arboard = { version = "3.7", features = ["wayland-data-control"] }
+chrono = "0.4"
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "clipboard", "default_fonts", "system_fonts"] }
 fast_image_resize = { version = "6.1.0", features = ["rayon"] }
-gdk = "0.18"
-gdk-pixbuf = "0.18"
-gio = "0.18"
-glib = "0.18"
-gtk = "0.18"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "rayon", "tga", "tiff", "webp"] }
 lcms2 = "6.2.0"
-pango = "0.18"
+libc = "0.2"
 percent-encoding = "2.3.2"
 quick-xml = "0.42.0"
 rand = "0.10.3"
 rayon = "1.12.0"
 resvg = "0.50.0"
+rfd = "0.17"
 
 [profile.release]
 strip = true
-lto = "thin"
+lto = "fat"
+codegen-units = 1

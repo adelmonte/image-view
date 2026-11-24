@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5aa9e6"/>
+      <stop offset="1" stop-color="#a8d8f0"/>
+    </linearGradient>
+    <linearGradient id="far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f7cac"/>
+      <stop offset="1" stop-color="#3c5f86"/>
+    </linearGradient>
+    <linearGradient id="near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3f8f5a"/>
+      <stop offset="1" stop-color="#2c6a41"/>
+    </linearGradient>
+    <clipPath id="photo">
+      <rect x="152" y="192" width="720" height="640" rx="56"/>
+    </clipPath>
+  </defs>
+  <rect x="88" y="128" width="848" height="768" rx="112" fill="#2e3440"/>
+  <rect x="88" y="128" width="848" height="768" rx="112" fill="none" stroke="#000" stroke-opacity="0.25" stroke-width="8"/>
+  <g clip-path="url(#photo)">
+    <rect x="152" y="192" width="720" height="640" fill="url(#sky)"/>
+    <circle cx="680" cy="352" r="72" fill="#ffd166"/>
+    <path d="M152 700 L376 440 L520 600 L600 520 L872 760 L872 832 L152 832 Z" fill="url(#far)"/>
+    <path d="M152 832 L152 740 L328 600 L472 712 L560 664 L872 832 Z" fill="url(#near)"/>
+  </g>
+</svg>

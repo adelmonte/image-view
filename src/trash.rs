@@ -5,16 +5,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 fn home_trash() -> PathBuf {
-    glib::user_data_dir().join("Trash")
+    crate::settings::user_data_dir().join("Trash")
 }
 
 fn uid() -> u32 {
-    unsafe { libc_getuid() }
-}
-
-extern "C" {
-    #[link_name = "getuid"]
-    fn libc_getuid() -> u32;
+    unsafe { libc::getuid() }
 }
 
 fn mount_top(path: &Path) -> Option<PathBuf> {
@@ -85,7 +80,7 @@ pub fn move_to_trash(path: &str) -> Option<String> {
     } else {
         path.to_string()
     };
-    let date = glib::DateTime::now_local().ok()?.format("%Y-%m-%dT%H:%M:%S").ok()?.to_string();
+    let date = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     for i in 0..10000 {
         let candidate = if i == 0 { name.clone() } else { format!("{} ({}){}", stem, i, ext) };
         let info = trash.join("info").join(format!("{}.trashinfo", candidate));

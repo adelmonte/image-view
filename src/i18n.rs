@@ -15,41 +15,6 @@ pub static TS_FILES: &[(&str, &str)] = ts!(
     "nb_NO", "nl", "pl", "pt_BR", "pt_PT", "ru", "sl", "sv", "tr", "uk", "vi", "zh_Hans", "zh_Hant"
 );
 
-pub fn native_name(code: &str) -> &'static str {
-    match code {
-        "bg" => "български",
-        "bn" => "বাংলা",
-        "cs" => "čeština",
-        "de" => "Deutsch",
-        "es" => "español",
-        "et" => "eesti",
-        "fr" => "français",
-        "gl" => "galego",
-        "hr" => "hrvatski",
-        "hu" => "magyar",
-        "id" => "Indonesia",
-        "is" => "íslenska",
-        "it" => "italiano",
-        "ja" => "日本語",
-        "kmr" => "kurmancî",
-        "ko" => "한국어",
-        "nb_NO" => "norsk bokmål",
-        "nl" => "Nederlands",
-        "pl" => "polski",
-        "pt_BR" => "português",
-        "pt_PT" => "português europeu",
-        "ru" => "русский",
-        "sl" => "slovenščina",
-        "sv" => "svenska",
-        "tr" => "Türkçe",
-        "uk" => "українська",
-        "vi" => "Tiếng Việt",
-        "zh_Hans" => "简体中文",
-        "zh_Hant" => "繁體中文",
-        _ => "",
-    }
-}
-
 thread_local! {
     static TABLE: RefCell<Option<HashMap<(String, String), String>>> = const { RefCell::new(None) };
     static BY_SOURCE: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
@@ -59,8 +24,13 @@ thread_local! {
 pub fn system_language() -> String {
     let mut entries: Vec<&str> = vec!["en"];
     entries.extend(TS_FILES.iter().map(|(c, _)| *c));
-    for lang in glib::language_names() {
-        let lang = lang.as_str();
+    let mut langs: Vec<String> = vec![];
+    for var in ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(v) = std::env::var(var) {
+            langs.extend(v.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()));
+        }
+    }
+    for lang in langs {
         let lang = lang.split(['.', '@']).next().unwrap_or("").replace('-', "_");
         if lang.is_empty() || lang == "C" || lang == "POSIX" {
             continue;
@@ -182,12 +152,7 @@ pub fn load(lang_setting: &str) -> bool {
 /// Qt-style tr(context, source)
 pub fn tr(ctx: &str, src: &str) -> String {
     let s = tr_raw(ctx, src);
-    // Our app is g-view; keep "qView" only where it really means upstream qView releases.
-    if ctx == "UpdateChecker" {
-        s
-    } else {
-        s.replace("qView", "g-view")
-    }
+    s.replace("qView", "image-view")
 }
 
 fn tr_raw(ctx: &str, src: &str) -> String {
@@ -198,49 +163,4 @@ fn tr_raw(ctx: &str, src: &str) -> String {
         return h;
     }
     BY_SOURCE.with(|b| b.borrow().get(src).cloned()).unwrap_or_else(|| src.to_string())
-}
-
-/// Convert a Qt mnemonic label ("&Open...") into a GTK one ("_Open...").
-pub fn mnemonic(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '&' => {
-                if chars.peek() == Some(&'&') {
-                    chars.next();
-                    out.push('&');
-                } else {
-                    out.push('_');
-                }
-            }
-            '_' => out.push_str("__"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// Strip a Qt mnemonic ("&Open..." -> "Open...")
-pub fn plain(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '&' {
-            if chars.peek() == Some(&'&') {
-                chars.next();
-                out.push('&');
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-#[macro_export]
-macro_rules! tr {
-    ($ctx:literal, $s:literal) => {
-        $crate::i18n::tr($ctx, $s)
-    };
 }

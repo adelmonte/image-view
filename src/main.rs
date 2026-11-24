@@ -1,106 +1,81 @@
-//! g-view: a Rust + GTK3 port of qView (https://github.com/jurplel/qView).
+//! image-view: a minimal image viewer (a Rust + egui port of qView, https://github.com/jurplel/qView).
 
-mod actions;
 mod app;
+mod core;
 mod decode;
-mod dialogs;
 mod i18n;
-mod imagecore;
-mod openwith;
-mod qtconf;
 mod settings;
 mod shortcuts;
 mod trash;
 mod util;
 mod view;
-mod window;
 
+use eframe::egui;
 use settings::Setting;
 
-static FONTS: &[(&str, &[u8])] = &[
-    ("Lato-Light.ttf", include_bytes!("../resources/Lato-Light.ttf")),
-    ("Lato-Regular.ttf", include_bytes!("../resources/Lato-Regular.ttf")),
-    ("MaterialIconsOutlined-Regular.otf", include_bytes!("../resources/MaterialIconsOutlined-Regular.otf")),
-];
-
-#[link(name = "fontconfig")]
-extern "C" {
-    fn FcConfigAppFontAddFile(config: *mut std::ffi::c_void, file: *const std::ffi::c_char) -> i32;
-}
-
-/// QVApplication::ensureFontLoaded for the bundled fonts
-fn register_fonts() {
-    let dir = glib::user_cache_dir().join("g-view").join("fonts");
-    let _ = std::fs::create_dir_all(&dir);
-    for (name, data) in FONTS {
-        let p = dir.join(name);
-        let up_to_date = std::fs::metadata(&p).map(|m| m.len() == data.len() as u64).unwrap_or(false);
-        if !up_to_date {
-            let _ = std::fs::write(&p, data);
-        }
-        if let Ok(c) = std::ffi::CString::new(p.to_string_lossy().as_bytes()) {
-            unsafe {
-                FcConfigAppFontAddFile(std::ptr::null_mut(), c.as_ptr());
-            }
-        }
-    }
-}
-
 fn print_help() {
-    println!("Usage: g-view [options] file\n");
+    println!("Usage: image-view [options] file\n");
     println!("Options:");
     println!("  -h, --help     Displays help on commandline options.");
     println!("  -v, --version  Displays version information.\n");
     println!("Arguments:");
-    println!("  file           The file to open.");
+    println!("  file           The file or folder to open.");
+}
+
+fn icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../dist/hicolor/256x256/apps/image-view.png")).ok()?.into_rgba8();
+    Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
     let mut file: Option<String> = None;
     let mut only_files = false;
-    for a in &args {
-        if !only_files && (a == "-h" || a == "--help" || a == "-?") {
-            print_help();
-            return;
-        }
-        if !only_files && (a == "-v" || a == "--version") {
-            println!("g-view {}", settings::fmt_double(app::VERSION));
-            return;
-        }
-        if !only_files && a == "--" {
-            only_files = true;
-            continue;
-        }
-        if !only_files && a.starts_with('-') && a.len() > 1 {
-            // Ignore GTK/X11 style options we don't know (Qt does the same for its own)
-            continue;
+    for a in std::env::args().skip(1) {
+        if !only_files {
+            match a.as_str() {
+                "-h" | "--help" | "-?" => {
+                    print_help();
+                    return;
+                }
+                "-v" | "--version" => {
+                    println!("image-view {}", env!("CARGO_PKG_VERSION"));
+                    return;
+                }
+                "--" => {
+                    only_files = true;
+                    continue;
+                }
+                _ if a.starts_with('-') && a.len() > 1 => continue,
+                _ => {}
+            }
         }
         if file.is_none() {
-            file = Some(a.clone());
+            file = Some(a);
         }
     }
 
-    glib::set_prgname(Some("g-view"));
-    glib::set_application_name("g-view");
-    register_fonts();
-    qtconf::migrate_if_needed();
+    settings::migrate_if_needed();
+    i18n::load(&settings::get().string(Setting::Language));
 
-    if gtk::init().is_err() {
-        eprintln!("g-view: cannot open display");
+    let geo: Vec<i32> = settings::Store::get("General", "geometry")
+        .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    let (size, maximized) = match geo.as_slice() {
+        [_, _, w, h, rest @ ..] if *w > 0 && *h > 0 => (egui::vec2(*w as f32, *h as f32), rest.first() == Some(&1)),
+        _ => (egui::vec2(640.0, 480.0), false),
+    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("image-view")
+        .with_app_id("image-view")
+        .with_inner_size(size)
+        .with_min_inner_size(egui::vec2(100.0, 100.0))
+        .with_maximized(maximized);
+    if let Some(i) = icon() {
+        viewport = viewport.with_icon(i);
+    }
+    let options = eframe::NativeOptions { viewport, clipboard_shortcuts: false, persist_window: false, ..Default::default() };
+    if let Err(e) = eframe::run_native("image-view", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, file))))) {
+        eprintln!("image-view: {}", e);
         std::process::exit(1);
     }
-    gtk::Window::set_default_icon_name("g-view");
-
-    // SettingsManager constructor: load settings, then translation
-    let lang = settings::SettingsManager::new().string(Setting::Language);
-    i18n::load(&lang);
-    app::init();
-
-    let window = app::new_window();
-    if let Some(f) = file {
-        app::open_file_in(&window, &f, true);
-    }
-
-    gtk::main();
 }

@@ -1,39 +1,34 @@
-//! Port of qView's SettingsManager plus the on-disk config store.
+//! Settings (qView's SettingsManager) and the on-disk config store.
 //!
-//! qView keeps everything in a QSettings INI file. We keep the same groups and keys
-//! ([General], [options], [recents], [shortcuts]) in a GLib key file of our own at
-//! `$XDG_CONFIG_HOME/g-view/g-view.conf`. On first run an existing qView config is
-//! migrated into it (see `qtconf.rs`).
+//! The config is an INI file in GLib key-file syntax at
+//! `$XDG_CONFIG_HOME/image-view/image-view.conf`, with qView's groups and keys
+//! ([General], [options], [recents], [shortcuts]). On first run an existing
+//! g-view config is copied over.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
-    // Window settings
     BgColorEnabled = 0,
     BgColor,
     TitleBarMode,
     WindowResizeMode,
     MinWindowResizedPercentage,
     MaxWindowResizedPercentage,
-    HideTitlebar,
-    ForceDarkMode,
-    QuitOnLastWindow,
-    MenuBarEnabled,
     FullScreenDetails,
     CtrlDragWindow,
-    // Image settings
     FilteringEnabled,
     ScalingEnabled,
     ScalingTwoEnabled,
     ScaleFactor,
+    TouchpadZoomSpeed,
     ScrollZoom,
     FractionalZoom,
     CursorZoom,
     CropMode,
     PastActualSizeEnabled,
-    // Miscellaneous settings
     Language,
     SortMode,
     SortDescending,
@@ -89,17 +84,6 @@ impl Value {
             Value::Str(s) => s.clone(),
         }
     }
-    /// Semantic equality used by the options dialog (Apply / Restore Defaults buttons).
-    pub fn same(&self, other: &Value) -> bool {
-        match (self, other) {
-            (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Str(_), _) | (_, Value::Str(_)) => self.to_str() == other.to_str(),
-            (Value::Double(_), _) | (_, Value::Double(_)) => {
-                (self.to_double() - other.to_double()).abs() < 1e-9
-            }
-            _ => self.to_int() == other.to_int(),
-        }
-    }
 }
 
 /// Format a double the way QVariant::toString does for "nice" values (5 -> "5", 2.5 -> "2.5").
@@ -132,23 +116,20 @@ macro_rules! def {
     };
 }
 
-pub static DEFS: [SettingDef; 33] = [
+pub static DEFS: [SettingDef; 30] = [
     def!(BgColorEnabled, "bgcolorenabled", Bool),
     def!(BgColor, "bgcolor", Str),
     def!(TitleBarMode, "titlebarmode", Int),
     def!(WindowResizeMode, "windowresizemode", Int),
     def!(MinWindowResizedPercentage, "minwindowresizedpercentage", Int),
     def!(MaxWindowResizedPercentage, "maxwindowresizedpercentage", Int),
-    def!(HideTitlebar, "hidetitlebar", Bool),
-    def!(ForceDarkMode, "forcedarkmode", Bool),
-    def!(QuitOnLastWindow, "quitonlastwindow", Bool),
-    def!(MenuBarEnabled, "menubarenabled", Bool),
     def!(FullScreenDetails, "fullscreendetails", Bool),
     def!(CtrlDragWindow, "ctrldragwindow", Bool),
     def!(FilteringEnabled, "filteringenabled", Bool),
     def!(ScalingEnabled, "scalingenabled", Bool),
     def!(ScalingTwoEnabled, "scalingtwoenabled", Bool),
     def!(ScaleFactor, "scalefactor", Int),
+    def!(TouchpadZoomSpeed, "touchpadzoomspeed", Int),
     def!(ScrollZoom, "scrollzoom", Int),
     def!(FractionalZoom, "fractionalzoom", Bool),
     def!(CursorZoom, "cursorzoom", Bool),
@@ -178,16 +159,13 @@ pub fn default_value(s: Setting) -> Value {
         WindowResizeMode => Int(1),
         MinWindowResizedPercentage => Int(20),
         MaxWindowResizedPercentage => Int(70),
-        HideTitlebar => Bool(false),
-        ForceDarkMode => Bool(true),
-        QuitOnLastWindow => Bool(false),
-        MenuBarEnabled => Bool(false),
         FullScreenDetails => Bool(false),
         CtrlDragWindow => Bool(false),
         FilteringEnabled => Bool(true),
         ScalingEnabled => Bool(true),
         ScalingTwoEnabled => Bool(true),
         ScaleFactor => Int(25),
+        TouchpadZoomSpeed => Int(100),
         ScrollZoom => Int(1),
         FractionalZoom => Bool(false),
         CursorZoom => Bool(true),
@@ -208,10 +186,6 @@ pub fn default_value(s: Setting) -> Value {
     }
 }
 
-pub fn def_for_key(key: &str) -> Option<&'static SettingDef> {
-    DEFS.iter().find(|d| d.key == key)
-}
-
 pub fn parse_value(kind: Kind, s: &str) -> Value {
     match kind {
         Kind::Bool => Value::Bool(Value::Str(s.to_string()).to_bool()),
@@ -224,130 +198,277 @@ pub fn parse_value(kind: Kind, s: &str) -> Value {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Config file store (QSettings equivalent)
-// ---------------------------------------------------------------------------------------------
+// ---- paths ----------------------------------------------------------------------------------
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    match std::env::var_os(var) {
+        Some(v) if !v.is_empty() && PathBuf::from(&v).is_absolute() => PathBuf::from(v),
+        _ => home().join(fallback),
+    }
+}
+
+pub fn home_dir() -> PathBuf {
+    home()
+}
+
+pub fn user_config_dir() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", ".config")
+}
+
+pub fn user_data_dir() -> PathBuf {
+    xdg("XDG_DATA_HOME", ".local/share")
+}
 
 pub fn config_dir() -> PathBuf {
-    glib::user_config_dir().join("g-view")
+    user_config_dir().join("image-view")
 }
 
 pub fn config_path() -> PathBuf {
-    config_dir().join("g-view.conf")
+    config_dir().join("image-view.conf")
 }
 
-/// Read-modify-write access to the config file. Every write re-reads the file first so that
-/// several running instances don't clobber each other (QSettings behaves the same way).
-pub struct Store;
+/// First run: start from the g-view config if there is one.
+pub fn migrate_if_needed() {
+    let path = config_path();
+    if path.exists() {
+        return;
+    }
+    let old = user_config_dir().join("g-view").join("g-view.conf");
+    if old.is_file() {
+        let _ = std::fs::create_dir_all(config_dir());
+        if std::fs::copy(&old, &path).is_ok() {
+            eprintln!("Imported settings from {}", old.display());
+        }
+    }
+}
 
-/// glib 0.18 has no KeyFile::set_string_list; write the raw value with GKeyFile list escaping.
-pub fn kf_set_list(kf: &glib::KeyFile, group: &str, key: &str, list: &[&str]) {
-    let mut v = String::new();
-    for item in list {
-        for (i, c) in item.chars().enumerate() {
-            match c {
-                '\\' => v.push_str("\\\\"),
-                ';' => v.push_str("\\;"),
-                '\n' => v.push_str("\\n"),
-                '\t' => v.push_str("\\t"),
-                '\r' => v.push_str("\\r"),
-                ' ' if i == 0 => v.push_str("\\s"),
-                c => v.push(c),
+// ---- key file -------------------------------------------------------------------------------
+
+/// Minimal GLib key file: ordered groups of ordered `key=value` lines, values stored escaped.
+#[derive(Default)]
+pub struct KeyFile {
+    groups: Vec<(String, Vec<(String, String)>)>,
+}
+
+fn unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut it = raw.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(o) => {
+                out.push('\\');
+                out.push(o);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn escape(s: &str, list_item: bool) -> String {
+    let mut v = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        match c {
+            '\\' => v.push_str("\\\\"),
+            ';' if list_item => v.push_str("\\;"),
+            '\n' => v.push_str("\\n"),
+            '\t' => v.push_str("\\t"),
+            '\r' => v.push_str("\\r"),
+            ' ' if i == 0 => v.push_str("\\s"),
+            c => v.push(c),
+        }
+    }
+    v
+}
+
+impl KeyFile {
+    pub fn parse(text: &str) -> KeyFile {
+        let mut kf = KeyFile::default();
+        let mut current: Option<usize> = None;
+        for line in text.lines() {
+            let t = line.trim_start();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            if t.starts_with('[') {
+                if let Some(end) = t.find(']') {
+                    let name = t[1..end].to_string();
+                    current = Some(match kf.groups.iter().position(|(g, _)| *g == name) {
+                        Some(i) => i,
+                        None => {
+                            kf.groups.push((name, vec![]));
+                            kf.groups.len() - 1
+                        }
+                    });
+                }
+                continue;
+            }
+            let (Some(g), Some(eq)) = (current, t.find('=')) else { continue };
+            let key = t[..eq].trim_end().to_string();
+            let val = t[eq + 1..].trim_start().to_string();
+            let entries = &mut kf.groups[g].1;
+            match entries.iter_mut().find(|(k, _)| *k == key) {
+                Some(e) => e.1 = val,
+                None => entries.push((key, val)),
             }
         }
-        v.push(';');
-    }
-    kf.set_value(group, key, &v);
-}
-
-impl Store {
-    pub fn load() -> glib::KeyFile {
-        let kf = glib::KeyFile::new();
-        let _ = kf.load_from_file(config_path(), glib::KeyFileFlags::KEEP_COMMENTS);
         kf
     }
 
-    fn save(kf: &glib::KeyFile) {
+    pub fn to_data(&self) -> String {
+        let mut s = String::new();
+        for (i, (g, entries)) in self.groups.iter().enumerate() {
+            if i > 0 {
+                s.push('\n');
+            }
+            s.push_str(&format!("[{}]\n", g));
+            for (k, v) in entries {
+                s.push_str(&format!("{}={}\n", k, v));
+            }
+        }
+        s
+    }
+
+    fn raw(&self, group: &str, key: &str) -> Option<&str> {
+        self.groups.iter().find(|(g, _)| g == group)?.1.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    fn set_raw(&mut self, group: &str, key: &str, value: String) {
+        let gi = match self.groups.iter().position(|(g, _)| g == group) {
+            Some(i) => i,
+            None => {
+                self.groups.push((group.to_string(), vec![]));
+                self.groups.len() - 1
+            }
+        };
+        let entries = &mut self.groups[gi].1;
+        match entries.iter_mut().find(|(k, _)| k == key) {
+            Some(e) => e.1 = value,
+            None => entries.push((key.to_string(), value)),
+        }
+    }
+
+    pub fn string(&self, group: &str, key: &str) -> Option<String> {
+        self.raw(group, key).map(unescape)
+    }
+
+    pub fn string_list(&self, group: &str, key: &str) -> Option<Vec<String>> {
+        let raw = self.raw(group, key)?;
+        let mut out = vec![];
+        let mut cur = String::new();
+        let mut it = raw.chars();
+        while let Some(c) = it.next() {
+            match c {
+                '\\' => match it.next() {
+                    Some(';') => cur.push(';'),
+                    Some(o) => {
+                        cur.push('\\');
+                        cur.push(o);
+                    }
+                    None => cur.push('\\'),
+                },
+                ';' => out.push(unescape(&std::mem::take(&mut cur))),
+                c => cur.push(c),
+            }
+        }
+        if !cur.is_empty() {
+            out.push(unescape(&cur));
+        }
+        Some(out)
+    }
+
+    pub fn set_string(&mut self, group: &str, key: &str, value: &str) {
+        self.set_raw(group, key, escape(value, false));
+    }
+
+    #[cfg(test)]
+    pub fn set_string_list(&mut self, group: &str, key: &str, list: &[String]) {
+        let mut v = String::new();
+        for item in list {
+            v.push_str(&escape(item, true));
+            v.push(';');
+        }
+        self.set_raw(group, key, v);
+    }
+}
+
+/// Read-modify-write access to the config file. Every write re-reads the file first so that
+/// several running windows don't clobber each other.
+pub struct Store;
+
+impl Store {
+    pub fn load() -> KeyFile {
+        KeyFile::parse(&std::fs::read_to_string(config_path()).unwrap_or_default())
+    }
+
+    fn save(kf: &KeyFile) {
         let _ = std::fs::create_dir_all(config_dir());
-        let data = kf.to_data();
         let path = config_path();
         let tmp = path.with_extension("conf.tmp");
-        if std::fs::write(&tmp, data.as_bytes()).is_ok() {
+        if std::fs::write(&tmp, kf.to_data().as_bytes()).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
     }
 
     pub fn get(group: &str, key: &str) -> Option<String> {
-        Self::load().string(group, key).ok().map(|s| s.to_string())
+        Self::load().string(group, key)
     }
 
     pub fn set(group: &str, key: &str, value: &str) {
-        let kf = Self::load();
+        let mut kf = Self::load();
         kf.set_string(group, key, value);
         Self::save(&kf);
     }
 
-    pub fn get_list(group: &str, key: &str) -> Option<Vec<String>> {
-        let kf = Self::load();
-        if !kf.has_key(group, key).unwrap_or(false) {
-            return None;
-        }
-        Some(kf.string_list(group, key).map(|l| l.iter().map(|s| s.to_string()).collect()).unwrap_or_default())
-    }
-
-    pub fn set_list(group: &str, key: &str, values: &[String]) {
-        let kf = Self::load();
-        let refs: Vec<&str> = values.iter().map(|s| s.as_str()).collect();
-        kf_set_list(&kf, group, key, &refs);
-        Self::save(&kf);
-    }
-
-    pub fn set_many(group: &str, values: &[(String, String)]) {
-        let kf = Self::load();
-        for (k, v) in values {
-            kf.set_string(group, k, v);
-        }
-        Self::save(&kf);
-    }
-
-    pub fn write_keyfile(kf: &glib::KeyFile) {
-        Self::save(kf);
-    }
-
-    pub fn exists() -> bool {
-        config_path().exists()
-    }
 }
 
-// ---------------------------------------------------------------------------------------------
-// SettingsManager
-// ---------------------------------------------------------------------------------------------
+// ---- SettingsManager ------------------------------------------------------------------------
 
 pub struct SettingsManager {
-    values: RefCell<Vec<Option<Value>>>,
+    values: RefCell<Vec<Value>>,
     mtime: RefCell<Option<std::time::SystemTime>>,
 }
 
+thread_local! {
+    static SETTINGS: Rc<SettingsManager> = Rc::new(SettingsManager::new());
+}
+
+/// The process-wide settings (lives on the UI thread)
+pub fn get() -> Rc<SettingsManager> {
+    SETTINGS.with(|s| s.clone())
+}
+
 impl SettingsManager {
-    pub fn new() -> Self {
-        let sm = SettingsManager { values: RefCell::new(vec![None; DEFS.len()]), mtime: RefCell::new(None) };
+    fn new() -> Self {
+        let sm = SettingsManager {
+            values: RefCell::new(DEFS.iter().map(|d| default_value(d.setting)).collect()),
+            mtime: RefCell::new(None),
+        };
         sm.load_settings();
         sm
     }
 
-    /// Returns true if any value changed (caller then broadcasts settingsUpdated).
+    /// Returns true if any value changed.
     pub fn load_settings(&self) -> bool {
         *self.mtime.borrow_mut() = std::fs::metadata(config_path()).and_then(|m| m.modified()).ok();
         let kf = Store::load();
         let mut changed = false;
         let mut values = self.values.borrow_mut();
         for (i, def) in DEFS.iter().enumerate() {
-            let new = match kf.string("options", def.key) {
-                Ok(s) => Some(parse_value(def.kind, s.as_str())),
-                Err(_) => None,
-            };
-            // QSettings returns the default when the key is missing
-            let new = new.or_else(|| Some(default_value(def.setting)));
+            let new = kf.string("options", def.key).map(|s| parse_value(def.kind, &s)).unwrap_or_else(|| default_value(def.setting));
             if values[i] != new {
                 changed = true;
                 values[i] = new;
@@ -356,40 +477,40 @@ impl SettingsManager {
         changed
     }
 
-    /// Reload only if the file changed on disk since the last load (cheap check on focus-in).
-    pub fn reload_if_changed(&self) -> bool {
-        let m = std::fs::metadata(config_path()).and_then(|m| m.modified()).ok();
-        if m != *self.mtime.borrow() {
-            return self.load_settings();
-        }
-        false
-    }
-
-    pub fn get(&self, s: Setting, defaults: bool) -> Value {
-        if defaults {
-            return default_value(s);
-        }
-        self.values.borrow()[s as usize].clone().unwrap_or_else(|| default_value(s))
-    }
-
-    pub fn get_by_key(&self, key: &str, defaults: bool) -> Value {
-        match def_for_key(key) {
-            Some(d) => self.get(d.setting, defaults),
-            None => Value::Str(String::new()),
-        }
+    fn value(&self, s: Setting) -> Value {
+        self.values.borrow()[s as usize].clone()
     }
 
     pub fn bool(&self, s: Setting) -> bool {
-        self.get(s, false).to_bool()
+        self.value(s).to_bool()
     }
     pub fn int(&self, s: Setting) -> i32 {
-        self.get(s, false).to_int()
+        self.value(s).to_int()
     }
     pub fn double(&self, s: Setting) -> f64 {
-        self.get(s, false).to_double()
+        self.value(s).to_double()
     }
     pub fn string(&self, s: Setting) -> String {
-        self.get(s, false).to_str()
+        self.value(s).to_str()
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyfile_lists_and_escapes() {
+        let kf = KeyFile::parse("[shortcuts]\nresetspeed=\\\\;\nzoomin=Ctrl++;Ctrl+=;\nslideshow=\nsemi=Ctrl+\\;;\n[options]\nbgcolor=#4c566a\n");
+        assert_eq!(kf.string_list("shortcuts", "resetspeed").unwrap(), vec!["\\"]);
+        assert_eq!(kf.string_list("shortcuts", "zoomin").unwrap(), vec!["Ctrl++", "Ctrl+="]);
+        assert!(kf.string_list("shortcuts", "slideshow").unwrap().is_empty());
+        assert_eq!(kf.string_list("shortcuts", "semi").unwrap(), vec!["Ctrl+;"]);
+        assert_eq!(kf.string("options", "bgcolor").unwrap(), "#4c566a");
+
+        let mut kf = KeyFile::default();
+        kf.set_string_list("s", "k", &["\\".into(), "a;b".into()]);
+        let back = KeyFile::parse(&kf.to_data());
+        assert_eq!(back.string_list("s", "k").unwrap(), vec!["\\", "a;b"]);
+    }
 }

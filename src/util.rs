@@ -121,9 +121,31 @@ pub fn base_name(p: &str) -> String {
     n.split('.').next().unwrap_or("").to_string()
 }
 
-pub fn parse_color(s: &str) -> Option<(f64, f64, f64)> {
-    let rgba = gdk::RGBA::parse(s).ok()?;
-    Some((rgba.red(), rgba.green(), rgba.blue()))
+/// "#rgb", "#rrggbb" or "#rrrrggggbbbb" (what QColor::name and qView write)
+pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.trim().strip_prefix('#')?;
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = match hex.len() {
+        3 => 1,
+        6 => 2,
+        9 => 3,
+        12 => 4,
+        _ => return None,
+    };
+    let comp = |i: usize| -> Option<u8> {
+        let v = u32::from_str_radix(&hex[i * n..(i + 1) * n], 16).ok()?;
+        let max = (1u32 << (4 * n)) - 1;
+        Some(((v * 255 + max / 2) / max) as u8)
+    };
+    Some((comp(0)?, comp(1)?, comp(2)?))
+}
+
+/// access(2) with W_OK
+pub fn is_writable(path: &str) -> bool {
+    let Ok(c) = std::ffi::CString::new(path) else { return false };
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
 pub fn perceived_brightness(r: f64, g: f64, b: f64) -> f64 {
@@ -145,9 +167,15 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.50 KiB");
         assert_eq!(group_digits(1234567), "1,234,567");
     }
+    #[test]
+    fn colors() {
+        assert_eq!(parse_color("#4c566a"), Some((0x4c, 0x56, 0x6a)));
+        assert_eq!(parse_color("#fff"), Some((255, 255, 255)));
+        assert_eq!(parse_color("red"), None);
+    }
 }
 
-/// Timing trace, enabled with GVIEW_TRACE=1
+/// Timing trace, enabled with IMAGE_VIEW_TRACE=1
 pub struct Trace(&'static str, std::time::Instant);
 impl Trace {
     pub fn new(name: &'static str) -> Trace {
@@ -156,7 +184,7 @@ impl Trace {
 }
 impl Drop for Trace {
     fn drop(&mut self) {
-        thread_local!(static ON: bool = std::env::var_os("GVIEW_TRACE").is_some());
+        thread_local!(static ON: bool = std::env::var_os("IMAGE_VIEW_TRACE").is_some());
         if ON.with(|o| *o) {
             eprintln!("[trace] {} {:.1}ms", self.0, self.1.elapsed().as_secs_f64() * 1000.0);
         }
