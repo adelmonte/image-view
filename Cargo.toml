@@ -4,9 +4,8 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-arboard = { version = "3.7", features = ["wayland-data-control"] }
 chrono = "0.4"
-eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "clipboard", "default_fonts", "system_fonts"] }
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "default_fonts", "system_fonts"] }
 fast_image_resize = { version = "6.1.0", features = ["rayon"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "rayon", "tga", "tiff", "webp"] }
 lcms2 = "6.2.0"
@@ -17,6 +16,8 @@ rand = "0.10.3"
 rayon = "1.12.0"
 resvg = "0.50.0"
 rfd = "0.17"
+# The clipboard (eframe's own would bring in X11).
+wl-clipboard-rs = "0.9"
 
 [profile.release]
 strip = true

@@ -7,6 +7,7 @@ use crate::settings::{self, Setting, Store};
 use crate::shortcuts::{self, ShortcutManager};
 use crate::util;
 use crate::view::{FitOptions, ViewState};
+use crate::wlclip;
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureHandle, TextureOptions, Vec2, ViewportCommand};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -134,6 +135,7 @@ fn xdg_open(target: &str) {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, file: Option<String>) -> Self {
         let ctx = &cc.egui_ctx;
+        ctx.add_plugin(wlclip::Plugin::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         ctx.set_visuals(egui::Visuals::dark());
         let mut fonts = egui::FontDefinitions::default();
@@ -800,33 +802,25 @@ impl App {
         let Some(img) = self.core.loaded.clone() else { return };
         // The clipboard is served from this thread until something else is copied
         std::thread::spawn(move || {
-            use arboard::SetExtLinux;
-            let data = arboard::ImageData { width: img.size[0], height: img.size[1], bytes: decode::to_rgba(&img).into() };
-            match arboard::Clipboard::new() {
-                Ok(mut c) => {
-                    if let Err(e) = c.set().wait().image(data) {
-                        eprintln!("copy: {}", e);
-                    }
-                }
-                Err(e) => eprintln!("clipboard: {}", e),
+            let copied = image::RgbaImage::from_raw(img.size[0] as u32, img.size[1] as u32, decode::to_rgba(&img))
+                .is_some_and(|rgba| wlclip::set_image(&rgba));
+            if !copied {
+                eprintln!("copy: couldn't put the image on the clipboard");
             }
         });
     }
 
     fn paste(&mut self) {
-        let Ok(mut c) = arboard::Clipboard::new() else { return };
-        let mut paths: Vec<String> = c.get().file_list().unwrap_or_default().iter().map(|p| p.to_string_lossy().to_string()).collect();
-        if paths.is_empty() {
-            if let Ok(text) = c.get_text() {
-                paths = text
-                    .lines()
-                    .map(|l| l.trim())
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .map(|l| util::url_to_local(l).unwrap_or_else(|| l.to_string()))
-                    .filter(|l| std::path::Path::new(l).exists())
-                    .collect();
-            }
-        }
+        // A file manager's copied files come as a URI list, anything else as text
+        let text = wlclip::get("text/uri-list").and_then(|b| String::from_utf8(b).ok()).or_else(wlclip::text);
+        let paths: Vec<String> = text
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| util::url_to_local(l).unwrap_or_else(|| l.to_string()))
+            .filter(|l| std::path::Path::new(l).exists())
+            .collect();
         if !paths.is_empty() {
             self.load_paths(&paths);
         }

@@ -9,6 +9,7 @@ mod shortcuts;
 mod trash;
 mod util;
 mod view;
+mod wlclip;
 
 use eframe::egui;
 use settings::Setting;
