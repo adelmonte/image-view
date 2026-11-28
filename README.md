@@ -12,7 +12,7 @@ port of [qView](https://github.com/jurplel/qView) (7.0). No GTK, no Qt.
 
 ## Building
 
-Needs Rust and `lcms2`. Rendering is OpenGL (via egui's glow backend), on Wayland or X11.
+Needs Rust and `lcms2`. Rendering is OpenGL (via egui's glow backend), on Wayland.
 
 ```
 cargo build --release
